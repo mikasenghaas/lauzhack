@@ -59,8 +59,6 @@ def get_args():
     return parser.parse_args()
 
 
-<<<<<<< Updated upstream
-=======
 def get_location(address: str) -> str:
     """
     Converts an address If not, to coordinates.
