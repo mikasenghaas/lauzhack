@@ -4,6 +4,8 @@ Some utility functions.
 
 import argparse
 from pydoc import describe
+import requests
+import json
 
 from datetime import date, datetime
 
@@ -46,3 +48,28 @@ def get_args():
     )
 
     return parser.parse_args()
+
+
+"""
+    Get the route time in seconds.
+    You can use city name or coordinates.
+"""
+def getRouteTime(start, end):
+    endpoint = "http://www.mapquestapi.com/directions/v2/route"
+
+    # Search params
+    params = {
+        'key': 'HnDX3JAuALRTge28jbZVWO1L538fJbZE',
+        'from': start,
+        'to': end,
+        'unit': 'k', # Use km instead of miles
+        'narrativeType' : 'none', # Just some other parameters to omit information we don't care about
+        'sideOfStreetDisplay' : False
+    }
+
+    # Do GET request and read JSON
+    response = requests.get(endpoint, params=params)
+    data = response.json()
+    seconds = data["route"]["time"]
+
+    return seconds
