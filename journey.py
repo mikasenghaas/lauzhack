@@ -1,104 +1,93 @@
 """
 Main entry point for computing journey.
 """
+import numpy as np
 import utils as utils
 import pandas as pd
-import pySBB as sbb
+import pickle
 
 
 def main():
     # Parse arguments
     args = utils.get_args()
-    print(args)
 
-    # Load PR stations
-    pr_stations = pd.read_csv("data/pr_stations.csv")
+    # Load graph
+    with open("data/graph_900_1800_3600.pkl", "rb") as f:
+        G = pickle.load(f)
 
-    if args.intermodal:
-        # Convert address to location
-        start_loc = utils.get_location(args.start)
-        print(f"Start location: {start_loc}")
+    if args.outage:
+        # Remove all the edges from 2 stations to simulate an outage
+        utils.remove_all_trains(G, from_station="St-Maurice", to_station="Martigny")
 
-        # 1. Find k-closest stations with PR
-        distances = [
-            (end[0], utils.get_distance(start_loc, f"{end[2]}, {end[3]}"))
-            for _, end in pr_stations.iterrows()
-        ]
-        # for i in distances:
-        #    print(i)
+    # Convert start and destination to location (lon, lat)
+    start_loc = utils.get_location(G, args.start)
+    end_loc = utils.get_location(G, args.end)
 
-        k = args.limit
-        distances.sort(key=lambda t: t[1])
-        k_closest_stations = distances[:k]
+    # Add both locations to graph
+    G.add_node("Start", pos=start_loc)
+    G.add_node("End", pos=end_loc)
 
-        # 2.1 Compute distance from start to each station in seconds
-        car_distances = [
-            (
-                station[0],
-                utils.getRouteTime(
-                    start_loc, utils.get_location(station[0]), method="foot"
-                ),
+    # Find k-closest stations from start and end
+    dists_from_start = []
+    dists_to_end = []
+    for station, attr in G.nodes(data=True):
+        try:
+            station_pos = attr["pos"]
+            dists_from_start.append(
+                (station, utils.get_distance(start_loc, station_pos))
             )
-            for station in k_closest_stations
-        ]
+            dists_to_end.append((station, utils.get_distance(end_loc, station_pos)))
+        except Exception as e:
+            continue
 
-        # 2.2 Compute journey (top-k) from each possible start to end
-        travels = []
-        for station, dist in car_distances:
-            print(f"Computing journey from {station} to {args.end}")
-            connections = sbb.get_connections(
-                station,
-                args.end,
-                via=args.via,
-                date=args.date,
-                time=args.time,
-                transportations=args.transportations,
-                limit=1,
-            )
-            for connection in connections:
-                # print(connection)
-                travels.append(
-                    {
-                        "start": args.start,
-                        "station": station,
-                        "seconds_to_station": dist,
-                        "end": args.end,
-                        "seconds_from_station_to_end": connection.duration.seconds,
-                        "connection": connection,
-                    }
+    # Sort the distances in place
+    start_k_closest = sorted(dists_from_start, key=lambda x: x[1])[: args.limit]
+    end_k_closest = sorted(dists_to_end, key=lambda x: x[1])[: args.limit]
+
+    # Compute travel time from start to k closest stations
+    for mode in ["foot", "bike", "car"]:
+        for station, dist in start_k_closest:
+            if args.exact_travel_time:
+                travel_time = utils.get_exact_travel_time(
+                    start_loc, station, method=mode
                 )
+                G.add_edge("Start", station, duration=travel_time, type=mode)
+            else:
+                travel_time = utils.get_approx_travel_time(dist, method=mode)
+                G.add_edge("Start", station, duration=travel_time, type=mode)
 
-        # 3. Combine journeys
-        # 4. Rank journey and return top-k
-        travels.sort(
-            key=lambda t: t["seconds_to_station"] + t["seconds_from_station_to_end"]
-        )
-        best_travel = travels[0]
+        for station, dist in end_k_closest:
+            if args.exact_travel_time:
+                travel_time = utils.get_exact_travel_time(dist, method=mode)
+                G.add_edge(station, "End", duration=travel_time, type=mode)
+            else:
+                travel_time = utils.get_approx_travel_time(dist, method=mode)
+                G.add_edge(station, "End", duration=travel_time, type=mode)
 
-        print(
-            f"The fastes journey is:\n"
-            f"1) Drive from {best_travel['start']} to {best_travel['station']} in {best_travel['seconds_to_station']} s\n"
-            f"2) Take the train from {best_travel['station']} to {best_travel['end']} in {best_travel['seconds_from_station_to_end']} s\n"
-            f"\t{best_travel['connection']}\n"
-            f"Total time: {best_travel['seconds_to_station'] + best_travel['seconds_from_station_to_end']} s"
-        )
+    # Run Dijkstra on graph
+    start_time = pd.to_datetime(f"{args.date} {args.time}")
+    mode_penalties = utils.get_penalties(args.sustainability)
+    print(f"Mode penalties: {mode_penalties}")
+    dists, edges_to = utils.dijkstra(
+        G,
+        "Start",
+        "End",
+        start_time=start_time,
+        change_penalty=args.change_penalty,
+        mode_penalties=mode_penalties,
+    )
+    print(dists)
 
-        pass
+    # Reconstruct path
+    edges = utils.reconstruct_edges(edges_to, "Start", "End")
+    for edge in edges[::-1][1:]:
+        print(edge)
 
-    else:
-        # Compute journey from start to end
-        connections = sbb.get_connections(
-            args.start,
-            args.end,
-            via=args.via,
-            date=args.date,
-            time=args.time,
-            transportations=args.transportations,
-            limit=args.limit,
-        )
+    # Postprocess path
+    path = utils.postprocess_path(edges[:-1])
 
-        for connection in connections:
-            print(connection)
+    # Print journey
+    utils.pretty_print(path, args)
 
 
 if __name__ == "__main__":
