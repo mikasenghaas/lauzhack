@@ -268,3 +268,67 @@ def dijkstra(G, start, end, start_time, change_penalty=300):
     paths[start] = [start]
 
     return distances, edges_to
+
+def merge_edges(edges: list[tuple]) -> list[tuple]:
+    """Merge two edges if they have same transport type.
+    
+        Edge Structure: (
+           start, 
+           end,
+           {
+               type,
+               duration,
+               departure  (only for train),
+               arrival    (only for train),
+               journey_id (only for train),
+               trip_name  (only for train),
+        )
+
+    Args:
+        edges (list[tuple]): list of travel edges.
+
+    Returns:
+        list[tuple]: post-processed list of travel edges.
+    """
+    traversed = []
+    prev = None
+    
+    for edge in edges:
+        
+        if prev is None:
+            prev = edge
+            traversed.append(edge)
+            continue
+        
+        # Need to check the transport type and, if it is train,
+        # the journey id
+        if edge[2]["type"] == prev[2]["type"] \
+            and (edge[2]["type"] != "train" 
+                 or edge[2]["journey_id"] == prev[2]["journey_id"]):
+                
+            prev = traversed.pop()
+            
+            # Merge the two edges
+            new_edge = (
+                prev[0],
+                edge[1],
+                {
+                    "type": prev[2]["type"],
+                    "duration": prev[2]["duration"] + edge[2]["duration"],
+                },
+            )
+            
+            if edge[2]["type"] == "train":
+                new_edge[2]["departure"] = prev[2]["departure"]
+                new_edge[2]["arrival"] = edge[2]["arrival"]
+                new_edge[2]["journey_id"] = edge[2]["journey_id"]
+                new_edge[2]["trip_name"] = edge[2]["trip_name"]
+        else:
+            new_edge = edge
+
+            
+        prev = new_edge
+        traversed.append(new_edge)
+            
+    return traversed
+            
