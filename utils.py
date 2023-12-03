@@ -11,10 +11,25 @@ import requests
 import json
 from geopy.geocoders import Nominatim
 from geopy.distance import distance
+import networkx as nx
 
 from datetime import date, datetime
 
 PR_STATIONS = "./data/pr_stations"
+
+# Average speed in m/s
+AVG_SPEED = {
+    "foot": 1.4,
+    "bike": 4.17,
+    "car": 13.89,
+}
+
+# Max travel time in seconds
+MAX_TRAVEL_TIME = {
+    "foot": 60 * 60 // 4,  # 15min
+    "bike": 60 * 60 // 2,  # 30min
+    "car": 60 * 60,  # 1h
+}
 
 
 def get_args():
@@ -52,6 +67,7 @@ def get_args():
         default=["train"],
         help=transportation_help,
     )
+    parser.add_argument("--exact-travel-time", action="store_true", help=time_help)
     parser.add_argument(
         "--intermodal", action="store_true", help="Only show intermodal journeys"
     )
@@ -61,8 +77,9 @@ def get_args():
 
 def get_location(address: str) -> str:
     """
-    Converts an address If not, to coordinates.
-    The address can be:
+    Converts an address to coordinates (latitude, longitude)
+
+    Address can be:
         - Full name
         - Abbreviation (maximal 4 characters and uppercase)
         - Coordinates  (Format: "latitude, longitude")
@@ -101,8 +118,9 @@ def get_location(address: str) -> str:
 
 
 def get_distance(start, end):
-    """Calculate distance between two coordinates in meters.
-       Coordinates must be in the format "latitude, longitude".
+    """
+    Calculate distance between two coordinates in meters.
+    Coordinates must be in the format "latitude, longitude".
 
     Args:
         start (str): Start coordinate.
@@ -116,25 +134,10 @@ def get_distance(start, end):
     return distance(start_converted, end_converted).meters
 
 
-"""
-    Get the route time in seconds.
-    You can use city name or coordinates.
-"""
-def getRouteTime(start, end):
-    endpoint = "http://www.mapquestapi.com/directions/v2/route"
-
-    # Search params
-    params = {
-        'key': 'HnDX3JAuALRTge28jbZVWO1L538fJbZE',
-        'from': start,
-        'to': end,
-        'unit': 'k', # Use km instead of miles
-        'narrativeType' : 'none', # Just some other parameters to omit information we don't care about
-        'sideOfStreetDisplay' : False
-    }
-
-
-def getRouteTime(start, end, method="car"):
+def get_exact_travel_time(start, end, method="car"):
+    """
+    Calculate travel time between two coordinates in seconds.
+    """
     endpoint = "http://www.mapquestapi.com/directions/v2/route"
     if method not in ["foot", "bike", "car"]:
         raise ValueError("Method must be either foot, bike or car")
@@ -163,6 +166,17 @@ def getRouteTime(start, end, method="car"):
     return seconds
 
 
+def get_approx_travel_time(dist, method="car"):
+    """
+    Calculate the approximate travel time between two coordinates in seconds.
+
+    Args:
+        dist (int): Distance between the two coordinates in meters.
+        method (str, optional): Method of transportation. Defaults to "car".
+    """
+    return dist / AVG_SPEED[method]
+
+
 def add_node(graph, node, k=5):
     """
     Adds a node to the graph if it doesn't exist yet.
@@ -171,10 +185,6 @@ def add_node(graph, node, k=5):
         graph (dict): Graph to add the node to.
         node (???): Node to add to the graph.
     """
-    if node in graph:
-        return
-
-    graph[node] = set()  # We assume each node is a tuple (node, distance, method)
 
     # Now we calculate the distance between the new node and all other nodes given the 3 different methods
     # We than take k-nearest neighbors and add them to the graph
@@ -189,3 +199,17 @@ def add_node(graph, node, k=5):
 
         distances.sort(key=lambda x: x[0])
         graph[node].update(distance[:k])
+
+
+def add_node(G: nx.Graph, start_loc: str, k: int) -> nx.Graph:
+    """
+    Adds a new node to the graph
+
+    Args:
+        G (nx.Graph): The graph
+        start_loc (str): The starting location
+        k (int): The number of closest stations to add
+
+    Returns:
+        nx.Graph: The graph with the new node
+    """
