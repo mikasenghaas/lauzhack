@@ -432,8 +432,11 @@ def remove_all_trains(G, from_station, to_station):
 
 def get_final_path_md(edges, start, end, date, time, sustainability):
     md = f"## Your Journey from {start} to {end}\n\n"
+
     md += f"📅 Date/ Time: {date} at {time}\n"
-    md += "### Travel Information\n"
+    md += f"🌍 Sustainable?: {sustainability}\n\n"
+
+    md += "\n### Travel Information\n"
 
     for i, (src, dst, attr) in enumerate(edges):
         if src == "Start":
@@ -442,10 +445,23 @@ def get_final_path_md(edges, start, end, date, time, sustainability):
             dst = end
 
         duration = pretty_time_delta(attr["duration"])
+        departure = attr.get("departure", None)
+        arrival = attr.get("arrival", None)
 
-        travel_type = attr["type"]
+        emoji = {
+            "foot": "🚶",
+            "bike": "🚴",
+            "car": "🚗",
+            "train": "🚆",
+        }
 
-        md += f"{i+1}. Go by {travel_type} from {src} to {dst} for {duration}\n\n"
+        msg = f"{i+1}. {emoji[attr['type']]} Go by {attr['type']} from {src} to {dst} for {duration}.\n"
+        if attr["type"] == "train":
+            msg += "   -> Take {} ({} - {})\n".format(
+                attr["trip_name"], departure, arrival
+            )
+
+        md += msg
 
     return md
 
@@ -456,18 +472,17 @@ def get_best_path(
     date,
     time,
     limit,
-    exact_travel_time=False,
     outage=False,
     sustainability=False,
     change_penalty=300,
 ):
     # Load graph
-    with open("graph.pkl", "rb") as f:
+    with open("data/graph_900_900_900.pkl", "rb") as f:
         G = pickle.load(f)
 
     if outage:
         # Remove all the edges from 2 stations to simulate an outage
-        remove_all_trains(G, from_station="St-Maurice", to_station="Martigny")
+        remove_all_trains(G, from_station="Renens VD", to_station="Lausanne")
 
     # Convert start and destination to location (lon, lat)
     start_loc = get_location(G, start)
@@ -495,20 +510,12 @@ def get_best_path(
     # Compute travel time from start to k closest stations
     for mode in ["foot", "bike", "car"]:
         for station, dist in start_k_closest:
-            if exact_travel_time:
-                travel_time = get_exact_travel_time(start_loc, station, method=mode)
-                G.add_edge("Start", station, duration=travel_time, type=mode)
-            else:
-                travel_time = get_approx_travel_time(dist, method=mode)
-                G.add_edge("Start", station, duration=travel_time, type=mode)
+            travel_time = get_approx_travel_time(dist, method=mode)
+            G.add_edge("Start", station, duration=travel_time, type=mode)
 
         for station, dist in end_k_closest:
-            if exact_travel_time:
-                travel_time = get_exact_travel_time(dist, method=mode)
-                G.add_edge(station, "End", duration=travel_time, type=mode)
-            else:
-                travel_time = get_approx_travel_time(dist, method=mode)
-                G.add_edge(station, "End", duration=travel_time, type=mode)
+            travel_time = get_approx_travel_time(dist, method=mode)
+            G.add_edge(station, "End", duration=travel_time, type=mode)
 
     # Run Dijkstra on graph
     start_time = pd.to_datetime(f"{date} {time}")
@@ -528,7 +535,6 @@ def get_best_path(
     # Postprocess path
     path = postprocess_path(edges[:-1])
 
-    # Print journey
     md = get_final_path_md(path, start, end, date, time, sustainability)
 
     return md
