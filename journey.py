@@ -12,7 +12,7 @@ def main():
     args = utils.get_args()
 
     # Load graph
-    with open("data/graph_900_1800_3600.pkl", "rb") as f:
+    with open("data/graph_900_900_900.pkl", "rb") as f:
         G = pickle.load(f)
 
     if args.outage:
@@ -67,7 +67,6 @@ def main():
     # Run Dijkstra on graph
     start_time = pd.to_datetime(f"{args.date} {args.time}")
     mode_penalties = utils.get_penalties(args.sustainability)
-    print(f"Mode penalties: {mode_penalties}")
     dists, edges_to = utils.dijkstra(
         G,
         "Start",
@@ -76,12 +75,9 @@ def main():
         change_penalty=args.change_penalty,
         mode_penalties=mode_penalties,
     )
-    print(dists)
 
     # Reconstruct path
     edges = utils.reconstruct_edges(edges_to, "Start", "End")
-    for edge in edges[::-1][1:]:
-        print(edge)
 
     # Postprocess path
     path = utils.postprocess_path(edges[:-1])

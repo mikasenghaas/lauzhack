@@ -38,12 +38,7 @@ PENALITIES = {
 
 def get_penalties(sustainability: bool):
     if sustainability:
-        PENALITIES["bike"] *= 1.1
-        PENALITIES["train"] *= 1.2
         PENALITIES["car"] *= 5
-    else:
-        PENALITIES["car"] *= 2
-
     return PENALITIES
 
 
@@ -199,6 +194,7 @@ def dijkstra(G, start, end, start_time, change_penalty=300, mode_penalties=PENAL
         node: {
             "distance": float("infinity"),
             "time": start_time,
+            "visited": False,
         }
         for node in list(G.nodes())
     }
@@ -207,7 +203,7 @@ def dijkstra(G, start, end, start_time, change_penalty=300, mode_penalties=PENAL
     edges_to = {node: None for node in list(G.nodes())}
 
     # Set the distance from the start node to itself to 0
-    distances[start]["distance"] = 0
+    distances[start] = {"distance": 0, "time": start_time, "visited": True}
     edges_to[start] = ("", "Start", {"type": "foot", "journey_id": None, "duration": 0})
 
     # Priority queue to keep track of nodes with their current distances
@@ -218,7 +214,7 @@ def dijkstra(G, start, end, start_time, change_penalty=300, mode_penalties=PENAL
         current_distance, current_node = heapq.heappop(priority_queue)
 
         if current_node == end:
-            return distances[end], edges_to
+            return distances, edges_to
 
         # Check if the current distance is smaller than the stored distance
         if current_distance > distances[current_node]["distance"]:
@@ -247,8 +243,11 @@ def dijkstra(G, start, end, start_time, change_penalty=300, mode_penalties=PENAL
                 train_departed = (
                     distances[current_node]["time"] > attributes["departure"]
                 )
+                train_too_far_away = (
+                    distances[current_node]["time"] - attributes["departure"]
+                ).total_seconds() > 60 * 60 * 1
 
-                if train_departed:
+                if train_departed or train_too_far_away:
                     continue
 
                 if prev_is_train:
@@ -263,24 +262,36 @@ def dijkstra(G, start, end, start_time, change_penalty=300, mode_penalties=PENAL
             # Add max of waiting time or changing penalty to current dist
             if changed_mode or changed_trip:
                 distance += max(wait, change_penalty)
+            elif next_is_train:
+                distance += wait
 
             # Overall dist (prev dist + dist to neighbor)
-            distance = current_distance + distance
+            total_distance = current_distance + distance
 
             # If the new distance is smaller, update the distance and add to the priority queue
-            if distance < distances[neighbor]["distance"]:
+            if total_distance < distances[neighbor]["distance"]:
                 # Update distance and time of arrival for neighbor
                 time_of_arrival = distances[current_node]["time"] + pd.Timedelta(
                     seconds=distance
                 )
-                distances[neighbor]["distance"] = distance
+                # print(f"Arrived at {neighbor} at {time_of_arrival}")
+                distances[neighbor]["distance"] = total_distance
                 distances[neighbor]["time"] = time_of_arrival
+                distances[neighbor]["visited"] = True
+
+                # for _, nneighbor, attributes in G.out_edges(neighbor, data=True):
+                #     if nneighbor != current_node:
+                #         distances[nneighbor]["visited"] = False
 
                 # Add edge that leads to neighbor
-                edges_to[neighbor] = (current_node, neighbor, attributes)
+                edges_to[neighbor] = (
+                    current_node,
+                    neighbor,
+                    attributes,
+                )
 
                 # Update priority queue
-                heapq.heappush(priority_queue, (distance, neighbor))
+                heapq.heappush(priority_queue, (total_distance, neighbor))
 
     print(f"Probably there is no path between {start} and {end}")
 
@@ -396,8 +407,15 @@ def pretty_print(edges, args):
             dst = args.end
 
         duration = pretty_time_delta(attr["duration"])
+        departure = attr.get("departure", None)
+        arrival = attr.get("arrival", None)
 
-        print(f"{i+1}. Go by {attr['type']} from {src} to {dst} for {duration}")
+        msg = f"{i+1}. Go by {attr['type']} from {src} to {dst} for {duration}."
+        if attr["type"] == "train":
+            msg += "\n   -> Take {} ({} - {})".format(
+                attr["trip_name"], departure, arrival
+            )
+        print(msg)
 
 """
     Remove all the trains from one station to another to simulate an outage.
