@@ -6,9 +6,8 @@ import re
 import csv
 import argparse
 import requests
-from pydoc import describe
+import pandas as pd
 import requests
-import json
 from geopy.geocoders import Nominatim
 from geopy.distance import distance
 import networkx as nx
@@ -177,39 +176,95 @@ def get_approx_travel_time(dist, method="car"):
     return dist / AVG_SPEED[method]
 
 
-def add_node(graph, node, k=5):
-    """
-    Adds a node to the graph if it doesn't exist yet.
+import heapq
 
-    Args:
-        graph (dict): Graph to add the node to.
-        node (???): Node to add to the graph.
-    """
 
-    # Now we calculate the distance between the new node and all other nodes given the 3 different methods
-    # We than take k-nearest neighbors and add them to the graph
+def dijkstra(G, start, end, start_time, change_penalty=300):
+    # Initialize distances dictionary with all distances set to infinity
+    # Each node is associated with a tuple of (distance, type of transport, time since start)
+    distances = {
+        node: {
+            "distance": float("infinity"),
+            "edge": None,
+            "time": start_time,
+            "journey_id": "",
+        }
+        for node in list(G.nodes())
+    }
 
-    for method in ["foot", "bike", "car"]:
-        distances = []
-        for other_node in graph:
-            if other_node == node:
+    edges_to = {}
+
+    # Set the distance from the start node to itself to 0
+    distances[start]["distance"] = 0
+
+    # Priority queue to keep track of nodes with their current distances
+    priority_queue = [(0, start)]
+
+    # Dictionary to store the shortest paths
+    paths = {node: [] for node in list(G.nodes())}
+
+    while priority_queue:
+        # Get the node with the smallest distance from the priority queue
+        current_distance, current_node = heapq.heappop(priority_queue)
+
+        if current_node == end:
+            return distances[end], edges_to
+
+        # Check if the current distance is smaller than the stored distance
+        if current_distance > distances[current_node]["distance"]:
+            continue
+
+        # Iterate over neighbors of the current node
+        for _, neighbor, attributes in G.out_edges(current_node, data=True):
+            # You can't take a car if you have already taken a train
+            if attributes["type"] == "car" and (
+                distances[current_node]["type"] != "car"
+                and distances[current_node]["distance"] != 0
+            ):
                 continue
-            distance = getRouteTime(node, other_node, method)
-            distances.append((distance, other_node, method))
 
-        distances.sort(key=lambda x: x[0])
-        graph[node].update(distance[:k])
+            # You can't take a train if it already departed
+            if attributes["type"] == "train" and (
+                distances[current_node]["time"] > attributes["departure"]
+            ):
+                continue
 
+            weight = attributes["duration"]
+            train_wait = 0
+            change_wait = 0
+            if attributes["type"] == "train":
+                # weight += (attributes['departure'] - distances[current_node]['time']).total_seconds()
+                train_wait = (
+                    attributes["departure"] - distances[current_node]["time"]
+                ).total_seconds()
+            # Get the weight of the edge
+            if (distances[current_node]["type"] != attributes["type"]) or distances[
+                current_node
+            ]["journey_id"] != attributes["journey_id"]:
+                # weight += change_penalty
+                change_wait = change_penalty
 
-def add_node(G: nx.Graph, start_loc: str, k: int) -> nx.Graph:
-    """
-    Adds a new node to the graph
+            if change_wait > train_wait:
+                continue
+            else:
+                weight += train_wait
 
-    Args:
-        G (nx.Graph): The graph
-        start_loc (str): The starting location
-        k (int): The number of closest stations to add
+            distance = current_distance + weight
 
-    Returns:
-        nx.Graph: The graph with the new node
-    """
+            # If the new distance is smaller, update the distance and add to the priority queue
+            if distance < distances[neighbor]["distance"]:
+                distances[neighbor]["distance"] = distance
+                distances[neighbor]["type"] = attributes["type"]
+                distances[neighbor]["time"] = distances[current_node][
+                    "time"
+                ] + pd.Timedelta(seconds=distance)
+                distances[neighbor]["journey_id"] = attributes["journey_id"]
+                # paths[neighbor] = paths[current_node] + [attributes]#[current_node]
+                edges_to[neighbor] = (current_node, attributes)
+                heapq.heappush(priority_queue, (distance, neighbor))
+
+    print(f"Probably there is no path between {start} and {end}")
+    # Add the start node to the paths
+    paths[start] = [start]
+
+    return distances, edges_to
