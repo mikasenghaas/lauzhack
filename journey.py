@@ -13,7 +13,7 @@ def main():
     print(args)
 
     # Load graph
-    with open("data/graph.pickle", "rb") as f:
+    with open("data/graph_900_900_900.pkl", "rb") as f:
         G = pickle.load(f)
 
     print(len(G.nodes), len(G.edges))
@@ -44,7 +44,7 @@ def main():
 
     # Sort the distances in place
     start_k_closest = sorted(dists_from_start, key=lambda x: x[1])[: args.limit]
-    end_k_closest = sorted(dists_from_start, key=lambda x: x[1])[: args.limit]
+    end_k_closest = sorted(dists_to_end, key=lambda x: x[1])[: args.limit]
 
     # Compute travel time from start to k closest stations
     for mode in ["foot", "bike", "car"]:
@@ -66,10 +66,18 @@ def main():
                 travel_time = utils.get_approx_travel_time(dist, method=mode)
                 G.add_edge(station, "End", duration=travel_time, type=mode)
 
-    print(len(G.nodes), len(G.edges))
-
     # Run Dijkstra on graph
-    # paths = run_dijkstra(G, start_loc)
+    start_time = pd.to_datetime(f"{args.date} {args.time}")
+    print(start_time)
+    dists, edges_to = utils.dijkstra(G, "Start", "End", start_time=start_time)
+
+    # Reconstruct path
+    path = utils.reconstruct_path(edges_to, "Start", "End")
+
+    # Postprocess path
+    # processed_path = utils.postprocess_path(path)
+
+    print(path)
 
 
 if __name__ == "__main__":

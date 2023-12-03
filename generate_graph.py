@@ -70,7 +70,9 @@ def build_edge_list(df):
                     {
                         "departure": trip.iloc[i].departure,
                         "arrival": trip.iloc[i + 1].arrival,
-                        "duration": trip.iloc[i + 1].arrival - trip.iloc[i].departure,
+                        "duration": (
+                            trip.iloc[i + 1].arrival - trip.iloc[i].departure
+                        ).total_seconds(),
                         "journey_id": journey_id,
                         "trip_name": trip_name,
                         "type": "train",
@@ -147,9 +149,7 @@ def main():
                 time = utils.get_approx_travel_time(dist, mode)
                 if time < limits[mode]:
                     # print(f"Adding from {u} to {v} via {mode} in {(time/60):.2f}min (less than {limits[mode]/60:.2f}min)")
-                    G.add_edge(
-                        u, v, mode=mode, duration=datetime.timedelta(seconds=time)
-                    )
+                    G.add_edge(u, v, type=mode, duration=time)
                     added_edges[mode] += 1
 
     print(f"Added {added_edges['foot']} foot edges.")

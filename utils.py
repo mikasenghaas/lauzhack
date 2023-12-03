@@ -12,6 +12,8 @@ from geopy.geocoders import Nominatim
 from geopy.distance import distance
 import networkx as nx
 
+import heapq
+
 from datetime import date, datetime
 
 PR_STATIONS = "./data/pr_stations"
@@ -30,6 +32,13 @@ MAX_TRAVEL_TIME = {
     "car": 60 * 60,  # 1h
 }
 
+PENALITIES = {
+    "foot": 1,
+    "bike": 1,
+    "car": 10,
+    "train": 1,
+}
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -37,7 +46,7 @@ def get_args():
     # Default date and time args
     # current_date = date.today().strftime("%Y-%m-%d")
     # current_time = datetime.now().strftime("%H:%M")
-    current_date = "2023-12-5"
+    current_date = "2023-12-01"
     current_time = "12:00"
 
     # Help messages
@@ -176,32 +185,28 @@ def get_approx_travel_time(dist, method="car"):
     return dist / AVG_SPEED[method]
 
 
-import heapq
-
-
 def dijkstra(G, start, end, start_time, change_penalty=300):
-    # Initialize distances dictionary with all distances set to infinity
-    # Each node is associated with a tuple of (distance, type of transport, time since start)
+    # Initialize distances and time dictionary with all distances set to infinity
+    assert start in G.nodes(), f"Start node {start} not in graph"
+    assert end in G.nodes(), f"End node {end} not in graph"
+
     distances = {
         node: {
             "distance": float("infinity"),
-            "edge": None,
             "time": start_time,
-            "journey_id": "",
         }
         for node in list(G.nodes())
     }
 
-    edges_to = {}
+    # Initialise dictionary to keep track of the edges that lead to the node with the smallest distance
+    edges_to = {node: None for node in list(G.nodes())}
 
     # Set the distance from the start node to itself to 0
     distances[start]["distance"] = 0
+    edges_to[start] = ("", "Start", {"type": "foot", "journey_id": None, "duration": 0})
 
     # Priority queue to keep track of nodes with their current distances
     priority_queue = [(0, start)]
-
-    # Dictionary to store the shortest paths
-    paths = {node: [] for node in list(G.nodes())}
 
     while priority_queue:
         # Get the node with the smallest distance from the priority queue
@@ -214,60 +219,74 @@ def dijkstra(G, start, end, start_time, change_penalty=300):
         if current_distance > distances[current_node]["distance"]:
             continue
 
-        # Iterate over neighbors of the current node
         for _, neighbor, attributes in G.out_edges(current_node, data=True):
-            # You can't take a car if you have already taken a train
-            if attributes["type"] == "car" and (
-                distances[current_node]["type"] != "car"
-                and distances[current_node]["distance"] != 0
-            ):
+            no_duration_avail = not (type(attributes["duration"]) in [int, float])
+            if no_duration_avail:
                 continue
 
-            # You can't take a train if it already departed
-            if attributes["type"] == "train" and (
-                distances[current_node]["time"] > attributes["departure"]
-            ):
-                continue
+            # Initialise distance to neighbor
+            distance = attributes["duration"]
 
-            weight = attributes["duration"]
-            train_wait = 0
-            change_wait = 0
-            if attributes["type"] == "train":
-                # weight += (attributes['departure'] - distances[current_node]['time']).total_seconds()
-                train_wait = (
+            # Add penalty
+            distance *= PENALITIES[attributes["type"]]
+
+            # Compute wait time for train (if next edge is a train)
+            wait = 0  # number of seconds you have to wait for the train
+            next_is_train = attributes["type"] == "train"
+            prev_is_train = edges_to[current_node][-1]["type"] == "train"
+            changed_trip = False
+            if next_is_train:
+                wait = (
                     attributes["departure"] - distances[current_node]["time"]
                 ).total_seconds()
-            # Get the weight of the edge
-            if (distances[current_node]["type"] != attributes["type"]) or distances[
-                current_node
-            ]["journey_id"] != attributes["journey_id"]:
-                # weight += change_penalty
-                change_wait = change_penalty
+                train_departed = (
+                    distances[current_node]["time"] >= attributes["departure"]
+                )
 
-            if change_wait > train_wait:
-                continue
-            else:
-                weight += train_wait
+                if train_departed:
+                    continue
 
-            distance = current_distance + weight
+                if prev_is_train:
+                    changed_trip = (
+                        edges_to[current_node][-1]["journey_id"]
+                        != attributes["journey_id"]
+                    )
+
+            # Penalise changing and waiting times
+            changed_mode = edges_to[current_node][-1]["type"] != attributes["type"]
+
+            # Add max of waiting time or changing penalty to current dist
+            if changed_mode or changed_trip:
+                distance += max(wait, change_penalty)
+
+            # Overall dist (prev dist + dist to neighbor)
+            distance = current_distance + distance
 
             # If the new distance is smaller, update the distance and add to the priority queue
             if distance < distances[neighbor]["distance"]:
+                # Update distance and time of arrival for neighbor
+                time_of_arrival = distances[current_node]["time"] + pd.Timedelta(
+                    seconds=distance
+                )
                 distances[neighbor]["distance"] = distance
-                distances[neighbor]["type"] = attributes["type"]
-                distances[neighbor]["time"] = distances[current_node][
-                    "time"
-                ] + pd.Timedelta(seconds=distance)
-                distances[neighbor]["journey_id"] = attributes["journey_id"]
-                # paths[neighbor] = paths[current_node] + [attributes]#[current_node]
-                edges_to[neighbor] = (current_node, attributes)
+                distances[neighbor]["time"] = time_of_arrival
+
+                # Add edge that leads to neighbor
+                edges_to[neighbor] = (current_node, neighbor, attributes)
+
+                # Update priority queue
                 heapq.heappush(priority_queue, (distance, neighbor))
 
     print(f"Probably there is no path between {start} and {end}")
-    # Add the start node to the paths
-    paths[start] = [start]
 
     return distances, edges_to
+
+def reconstruct_path(edges_to: list[tuple[str, str, dict]], start: str, end: str):
+    path = [end]
+    while path[-1] != start:
+        path.append(edges_to[path[-1]][0])
+        print(edges_to[path[-1]])
+    return path[::-1]
 
 def merge_edges(edges: list[tuple]) -> list[tuple]:
     """Merge two edges if they have same transport type.
@@ -331,4 +350,3 @@ def merge_edges(edges: list[tuple]) -> list[tuple]:
         traversed.append(new_edge)
             
     return traversed
-            
