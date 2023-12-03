@@ -10,20 +10,18 @@ import pickle
 def main():
     # Parse arguments
     args = utils.get_args()
-    print(args)
 
     # Load graph
-    with open("data/graph_900_900_900.pkl", "rb") as f:
+    with open("data/graph_900_1800_3600.pkl", "rb") as f:
         G = pickle.load(f)
 
-    print(len(G.nodes), len(G.edges))
-
-    if not args.intermodal:
-        raise ValueError("Only intermodal journeys are supported")
+    if args.outage:
+        # Remove all the edges from 2 stations to simulate an outage
+        utils.remove_all_trains(G, from_station="St-Maurice", to_station="Martigny")
 
     # Convert start and destination to location (lon, lat)
-    start_loc = utils.get_location(args.start)
-    end_loc = utils.get_location(args.end)
+    start_loc = utils.get_location(G, args.start)
+    end_loc = utils.get_location(G, args.end)
 
     # Add both locations to graph
     G.add_node("Start", pos=start_loc)
@@ -68,16 +66,28 @@ def main():
 
     # Run Dijkstra on graph
     start_time = pd.to_datetime(f"{args.date} {args.time}")
-    print(start_time)
-    dists, edges_to = utils.dijkstra(G, "Start", "End", start_time=start_time)
+    mode_penalties = utils.get_penalties(args.sustainability)
+    print(f"Mode penalties: {mode_penalties}")
+    dists, edges_to = utils.dijkstra(
+        G,
+        "Start",
+        "End",
+        start_time=start_time,
+        change_penalty=args.change_penalty,
+        mode_penalties=mode_penalties,
+    )
+    print(dists)
 
     # Reconstruct path
-    path = utils.reconstruct_path(edges_to, "Start", "End")
+    edges = utils.reconstruct_edges(edges_to, "Start", "End")
+    for edge in edges[::-1][1:]:
+        print(edge)
 
     # Postprocess path
-    # processed_path = utils.postprocess_path(path)
+    path = utils.postprocess_path(edges[:-1])
 
-    print(path)
+    # Print journey
+    utils.pretty_print(path, args)
 
 
 if __name__ == "__main__":

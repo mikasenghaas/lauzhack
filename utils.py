@@ -14,7 +14,7 @@ import networkx as nx
 
 import heapq
 
-from datetime import date, datetime
+import datetime
 
 PR_STATIONS = "./data/pr_stations"
 
@@ -35,9 +35,20 @@ MAX_TRAVEL_TIME = {
 PENALITIES = {
     "foot": 1,
     "bike": 1,
-    "car": 10,
+    "car": 1,
     "train": 1,
 }
+
+
+def get_penalties(sustainability: bool):
+    if sustainability:
+        PENALITIES["bike"] *= 1.1
+        PENALITIES["train"] *= 1.2
+        PENALITIES["car"] *= 5
+    else:
+        PENALITIES["car"] *= 2
+
+    return PENALITIES
 
 
 def get_args():
@@ -53,15 +64,16 @@ def get_args():
     loc_types = ["address", "station name", "station abbreviation", "coordinate"]
     transportation_types = ["train", "tram", "ship", "bus", "cableway"]
     start_help = f"Start location (Specify either {', '.join(loc_types)})"
-    via_help = f"Locations to pass through (Specify either {', '.join(loc_types)})"
+    # via_help = f"Locations to pass through (Specify either {', '.join(loc_types)})"
     stop_help = f"Stop location (Specify either {', '.join(loc_types)})"
     date_help = "Date of departure (Format: YYYY-MM-DD). Default: Today"
     time_help = "Time of departure (Format: YYYY-MM-DD). Default: Now"
     transportation_help = f"Modes of transportation (Specify from {', '.join(transportation_types)}). Default: All"
+    outage_simulation = f"Simulate outage of a station"
 
     # Specify line arguments
     parser.add_argument("--start", type=str, required=True, help=start_help)
-    parser.add_argument("--via", type=list[str], help=via_help)
+    # parser.add_argument("--via", type=list[str], help=via_help)
     parser.add_argument("--end", type=str, required=True, help=stop_help)
     parser.add_argument("--date", type=str, default=current_date, help=date_help)
     parser.add_argument("--time", type=str, default=current_time, help=time_help)
@@ -77,19 +89,24 @@ def get_args():
     )
     parser.add_argument("--exact-travel-time", action="store_true", help=time_help)
     parser.add_argument(
-        "--intermodal", action="store_true", help="Only show intermodal journeys"
+        "--change-penalty", type=int, default=300, help="Change penalty"
     )
+    parser.add_argument(
+        "--sustainability",
+        action="store_true",
+        help="Sustainability of journey",
+    )
+    parser.add_argument("--outage", action="store_true", help=outage_simulation)
 
     return parser.parse_args()
 
 
-def get_location(address: str) -> str:
+def get_location(G, address: str) -> str:
     """
     Converts an address to coordinates (latitude, longitude)
 
     Address can be:
         - Full name
-        - Abbreviation (maximal 4 characters and uppercase)
         - Coordinates  (Format: "latitude, longitude")
 
     Args:
@@ -104,17 +121,9 @@ def get_location(address: str) -> str:
     if bool(pattern.match(address)):
         return address
 
-    # Check if it is an abbreviation
-    if len(address) <= 4 and address.isupper():
-        with open(PR_STATIONS, mode="r") as file:
-            reader = csv.reader(file)
-            _ = next(reader)
-
-            for row in reader:
-                if row[1] == address:
-                    latitude = row[3]
-                    longitude = row[4]
-                    return "{}, {}".format(latitude, longitude)
+    # Check if already stationo
+    if address in G.nodes():
+        return G.nodes[address]["pos"]
 
     # Use geopy to convert coordinates to address
     geolocator = Nominatim(user_agent="sbb_project")
@@ -185,7 +194,7 @@ def get_approx_travel_time(dist, method="car"):
     return dist / AVG_SPEED[method]
 
 
-def dijkstra(G, start, end, start_time, change_penalty=300):
+def dijkstra(G, start, end, start_time, change_penalty=300, mode_penalties=PENALITIES):
     # Initialize distances and time dictionary with all distances set to infinity
     assert start in G.nodes(), f"Start node {start} not in graph"
     assert end in G.nodes(), f"End node {end} not in graph"
@@ -228,7 +237,7 @@ def dijkstra(G, start, end, start_time, change_penalty=300):
             distance = attributes["duration"]
 
             # Add penalty
-            distance *= PENALITIES[attributes["type"]]
+            distance *= mode_penalties[attributes["type"]]
 
             # Compute wait time for train (if next edge is a train)
             wait = 0  # number of seconds you have to wait for the train
@@ -240,7 +249,7 @@ def dijkstra(G, start, end, start_time, change_penalty=300):
                     attributes["departure"] - distances[current_node]["time"]
                 ).total_seconds()
                 train_departed = (
-                    distances[current_node]["time"] >= attributes["departure"]
+                    distances[current_node]["time"] > attributes["departure"]
                 )
 
                 if train_departed:
@@ -281,18 +290,25 @@ def dijkstra(G, start, end, start_time, change_penalty=300):
 
     return distances, edges_to
 
-def reconstruct_path(edges_to: list[tuple[str, str, dict]], start: str, end: str):
+
+def reconstruct_edges(edges_to: list[tuple[str, str, dict]], start: str, end: str):
+    """
+    Given shortest path from start to end, reconstruct edges.
+    """
     path = [end]
+    edges = [edges_to[end]]
     while path[-1] != start:
         path.append(edges_to[path[-1]][0])
-        print(edges_to[path[-1]])
-    return path[::-1]
+        edges.append(edges_to[path[-1]])
 
-def merge_edges(edges: list[tuple]) -> list[tuple]:
+    return edges
+
+
+def postprocess_path(edges: list[tuple]) -> list[tuple]:
     """Merge two edges if they have same transport type.
-    
+
         Edge Structure: (
-           start, 
+           start,
            end,
            {
                type,
@@ -311,22 +327,20 @@ def merge_edges(edges: list[tuple]) -> list[tuple]:
     """
     traversed = []
     prev = None
-    
-    for edge in edges:
-        
+
+    for edge in edges[::-1]:
         if prev is None:
             prev = edge
             traversed.append(edge)
             continue
-        
+
         # Need to check the transport type and, if it is train,
         # the journey id
-        if edge[2]["type"] == prev[2]["type"] \
-            and (edge[2]["type"] != "train" 
-                 or edge[2]["journey_id"] == prev[2]["journey_id"]):
-                
+        if edge[2]["type"] == prev[2]["type"] and (
+            edge[2]["type"] != "train" or edge[2]["journey_id"] == prev[2]["journey_id"]
+        ):
             prev = traversed.pop()
-            
+
             # Merge the two edges
             new_edge = (
                 prev[0],
@@ -336,7 +350,7 @@ def merge_edges(edges: list[tuple]) -> list[tuple]:
                     "duration": prev[2]["duration"] + edge[2]["duration"],
                 },
             )
-            
+
             if edge[2]["type"] == "train":
                 new_edge[2]["departure"] = prev[2]["departure"]
                 new_edge[2]["arrival"] = edge[2]["arrival"]
@@ -345,8 +359,65 @@ def merge_edges(edges: list[tuple]) -> list[tuple]:
         else:
             new_edge = edge
 
-            
         prev = new_edge
         traversed.append(new_edge)
-            
+
     return traversed
+
+
+def pretty_time_delta(seconds):
+    seconds = int(seconds)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if days > 0:
+        return "%dd%dh%dm%ds" % (days, hours, minutes, seconds)
+    elif hours > 0:
+        return "%dh%dm%ds" % (hours, minutes, seconds)
+    elif minutes > 0:
+        return "%dm%ds" % (minutes, seconds)
+    else:
+        return "%ds" % (seconds,)
+
+
+def pretty_print(edges: list[tuple], args):
+    """Prints the edges in a nice format.
+
+    Args:
+        edges (list[tuple]): list of travel edges.
+    """
+    print(f"# Your Journey from {args.start} to {args.end}")
+
+    print(f"\nDate/ Time: {args.date} at {args.time}")
+    print(f"Sustainability: {args.sustainability}\n")
+
+    print("### Travel Information\n---\n")
+
+    for i, (src, dst, attr) in enumerate(edges):
+        if src == "Start":
+            src = args.start
+        if dst == "End":
+            dst = args.end
+
+        duration = pretty_time_delta(attr["duration"])
+
+        print(f"{i+1}. Go by {attr['type']} from {src} to {dst} for {duration}")
+
+
+"""
+    Remove all the trains from one station to another to simulate an outage.
+"""
+
+
+def remove_all_trains(G, from_station, to_station):
+    edges_to_remove = []
+
+    for edge in G.out_edges(from_station, data=True):
+        if edge[2]["type"] == "train" and edge[1] == to_station:
+            edges_to_remove.append(edge[:2])
+
+    print(
+        f"Removing all the edges from {from_station} to {to_station} : {len(edges_to_remove)}"
+    )
+    for edge in edges_to_remove:
+        G.remove_edge(*edge)
