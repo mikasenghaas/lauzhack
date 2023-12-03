@@ -1,16 +1,8 @@
 import gradio as gr
 
-# ------------- Global Variables
-DAYS = [
-    "Su, 26.11.2023 ",
-    "Mo, 27.11.2023",
-    "Tu, 28.11.2023",
-    "We, 29.11.2023",
-    "Th, 30.11.2023",
-    "Fr, 01.12.2023",
-    "Sa, 02.12.2023",   
-]
+from utils import get_best_path
 
+# ------------- Constants
 TITLE = "Travel Planner" # TODO: Change title as we need
 
 # ------------- Main App
@@ -34,7 +26,7 @@ with gr.Blocks(
 
         with gr.Row() as metainfo:
             limit = gr.Slider(minimum=1, maximum=5, step=1, label="Limit", interactive=True, value=3)
-            days = gr.Dropdown(DAYS, label="Day", value=DAYS[-1])
+            days = gr.Textbox(label="Day", placeholder="YYYY-MM-DD")
             time = gr.Textbox(label="Time", placeholder="hh:mm")
 
         submit = gr.Button(value="Search", variant="primary")
@@ -52,6 +44,8 @@ with gr.Blocks(
             
             ---
             """
+
+            md = get_best_path(A, B, day, time, limit)
 
             return {
                 output: gr.Column(visible=True),

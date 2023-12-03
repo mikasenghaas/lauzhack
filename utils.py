@@ -3,18 +3,14 @@ Some utility functions.
 """
 
 import re
-import csv
 import argparse
 import requests
 import pandas as pd
 import requests
 from geopy.geocoders import Nominatim
 from geopy.distance import distance
-import networkx as nx
-
 import heapq
-
-import datetime
+import pickle
 
 PR_STATIONS = "./data/pr_stations"
 
@@ -82,7 +78,7 @@ def get_args():
     )
     parser.add_argument(
         "--transportations",
-        type=list[str],
+        type,
         choices=transportation_types,
         default=["train"],
         help=transportation_help,
@@ -291,7 +287,7 @@ def dijkstra(G, start, end, start_time, change_penalty=300, mode_penalties=PENAL
     return distances, edges_to
 
 
-def reconstruct_edges(edges_to: list[tuple[str, str, dict]], start: str, end: str):
+def reconstruct_edges(edges_to, start: str, end: str):
     """
     Given shortest path from start to end, reconstruct edges.
     """
@@ -304,7 +300,7 @@ def reconstruct_edges(edges_to: list[tuple[str, str, dict]], start: str, end: st
     return edges
 
 
-def postprocess_path(edges: list[tuple]) -> list[tuple]:
+def postprocess_path(edges):
     """Merge two edges if they have same transport type.
 
         Edge Structure: (
@@ -380,7 +376,7 @@ def pretty_time_delta(seconds):
         return "%ds" % (seconds,)
 
 
-def pretty_print(edges: list[tuple], args):
+def pretty_print(edges, args):
     """Prints the edges in a nice format.
 
     Args:
@@ -403,7 +399,6 @@ def pretty_print(edges: list[tuple], args):
 
         print(f"{i+1}. Go by {attr['type']} from {src} to {dst} for {duration}")
 
-
 """
     Remove all the trains from one station to another to simulate an outage.
 """
@@ -421,3 +416,103 @@ def remove_all_trains(G, from_station, to_station):
     )
     for edge in edges_to_remove:
         G.remove_edge(*edge)
+
+
+def get_final_path_md(edges, start, end, date, time, sustainability):
+    
+    md = f"## Your Journey from {start} to {end}\n\n"
+    md += f"📅 Date/ Time: {date} at {time}\n"
+    md += "### Travel Information\n"
+
+    for i, (src, dst, attr) in enumerate(edges):
+        if src == "Start":
+            src = start
+        if dst == "End":
+            dst = end
+
+        duration = pretty_time_delta(attr["duration"])
+
+        travel_type = attr['type']
+        emoji = "🚉" if travel_type == "train" else "🚗" if travel_type == "car" else "🚶" if travel_type == "foot" else "🚀"
+
+        md += f"{i+1}. {emoji} Go by {travel_type} from {src} to {dst} for {duration}\n\n"
+    
+    return md
+
+def get_best_path(start, end, date, time, limit, exact_travel_time=False, outage=False, sustainability=False, change_penalty=300):
+    
+    # Load graph
+    with open("graph.pkl", "rb") as f:
+        G = pickle.load(f)
+
+    if outage:
+        # Remove all the edges from 2 stations to simulate an outage
+        remove_all_trains(G, from_station="St-Maurice", to_station="Martigny")
+
+    # Convert start and destination to location (lon, lat)
+    start_loc = get_location(G, start)
+    end_loc = get_location(G, end)
+
+    # Add both locations to graph
+    G.add_node("Start", pos=start_loc)
+    G.add_node("End", pos=end_loc)
+
+    # Find k-closest stations from start and end
+    dists_from_start = []
+    dists_to_end = []
+    for station, attr in G.nodes(data=True):
+        try:
+            station_pos = attr["pos"]
+            dists_from_start.append(
+                (station, get_distance(start_loc, station_pos))
+            )
+            dists_to_end.append((station, get_distance(end_loc, station_pos)))
+        except Exception as e:
+            continue
+
+    # Sort the distances in place
+    start_k_closest = sorted(dists_from_start, key=lambda x: x[1])[: limit]
+    end_k_closest = sorted(dists_to_end, key=lambda x: x[1])[: limit]
+
+    # Compute travel time from start to k closest stations
+    for mode in ["foot", "bike", "car"]:
+        for station, dist in start_k_closest:
+            if exact_travel_time:
+                travel_time = get_exact_travel_time(
+                    start_loc, station, method=mode
+                )
+                G.add_edge("Start", station, duration=travel_time, type=mode)
+            else:
+                travel_time = get_approx_travel_time(dist, method=mode)
+                G.add_edge("Start", station, duration=travel_time, type=mode)
+
+        for station, dist in end_k_closest:
+            if exact_travel_time:
+                travel_time = get_exact_travel_time(dist, method=mode)
+                G.add_edge(station, "End", duration=travel_time, type=mode)
+            else:
+                travel_time = get_approx_travel_time(dist, method=mode)
+                G.add_edge(station, "End", duration=travel_time, type=mode)
+
+    # Run Dijkstra on graph
+    start_time = pd.to_datetime(f"{date} {time}")
+    mode_penalties = get_penalties(sustainability)
+    dists, edges_to = dijkstra(
+        G,
+        "Start",
+        "End",
+        start_time=start_time,
+        change_penalty=change_penalty,
+        mode_penalties=mode_penalties,
+    )
+
+    # Reconstruct path
+    edges = reconstruct_edges(edges_to, "Start", "End")
+
+    # Postprocess path
+    path = postprocess_path(edges[:-1])
+
+    # Print journey
+    md = get_final_path_md(path, start, end, date, time, sustainability)
+
+    return md
