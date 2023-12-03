@@ -71,13 +71,6 @@ def get_args():
     parser.add_argument(
         "--limit", type=int, default=3, help="Number of journeys to return"
     )
-    parser.add_argument(
-        "--transportations",
-        type,
-        choices=transportation_types,
-        default=["train"],
-        help=transportation_help,
-    )
     parser.add_argument("--exact-travel-time", action="store_true", help=time_help)
     parser.add_argument(
         "--change-penalty", type=int, default=300, help="Change penalty"
@@ -417,6 +410,7 @@ def pretty_print(edges, args):
             )
         print(msg)
 
+
 """
     Remove all the trains from one station to another to simulate an outage.
 """
@@ -437,7 +431,6 @@ def remove_all_trains(G, from_station, to_station):
 
 
 def get_final_path_md(edges, start, end, date, time, sustainability):
-    
     md = f"## Your Journey from {start} to {end}\n\n"
     md += f"📅 Date/ Time: {date} at {time}\n"
     md += "### Travel Information\n"
@@ -450,15 +443,24 @@ def get_final_path_md(edges, start, end, date, time, sustainability):
 
         duration = pretty_time_delta(attr["duration"])
 
-        travel_type = attr['type']
-        emoji = "🚉" if travel_type == "train" else "🚗" if travel_type == "car" else "🚶" if travel_type == "foot" else "🚀"
+        travel_type = attr["type"]
 
-        md += f"{i+1}. {emoji} Go by {travel_type} from {src} to {dst} for {duration}\n\n"
-    
+        md += f"{i+1}. Go by {travel_type} from {src} to {dst} for {duration}\n\n"
+
     return md
 
-def get_best_path(start, end, date, time, limit, exact_travel_time=False, outage=False, sustainability=False, change_penalty=300):
-    
+
+def get_best_path(
+    start,
+    end,
+    date,
+    time,
+    limit,
+    exact_travel_time=False,
+    outage=False,
+    sustainability=False,
+    change_penalty=300,
+):
     # Load graph
     with open("graph.pkl", "rb") as f:
         G = pickle.load(f)
@@ -481,24 +483,20 @@ def get_best_path(start, end, date, time, limit, exact_travel_time=False, outage
     for station, attr in G.nodes(data=True):
         try:
             station_pos = attr["pos"]
-            dists_from_start.append(
-                (station, get_distance(start_loc, station_pos))
-            )
+            dists_from_start.append((station, get_distance(start_loc, station_pos)))
             dists_to_end.append((station, get_distance(end_loc, station_pos)))
         except Exception as e:
             continue
 
     # Sort the distances in place
-    start_k_closest = sorted(dists_from_start, key=lambda x: x[1])[: limit]
-    end_k_closest = sorted(dists_to_end, key=lambda x: x[1])[: limit]
+    start_k_closest = sorted(dists_from_start, key=lambda x: x[1])[:limit]
+    end_k_closest = sorted(dists_to_end, key=lambda x: x[1])[:limit]
 
     # Compute travel time from start to k closest stations
     for mode in ["foot", "bike", "car"]:
         for station, dist in start_k_closest:
             if exact_travel_time:
-                travel_time = get_exact_travel_time(
-                    start_loc, station, method=mode
-                )
+                travel_time = get_exact_travel_time(start_loc, station, method=mode)
                 G.add_edge("Start", station, duration=travel_time, type=mode)
             else:
                 travel_time = get_approx_travel_time(dist, method=mode)
